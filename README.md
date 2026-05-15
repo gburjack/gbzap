@@ -65,6 +65,7 @@ GET http://localhost:3000/health
 
 
 
+
 ## Stack técnica
 - **Backend**: Node.js 18+ · Express · Supabase · Bull Queue · node-cron
 - **IA**: Groq (Llama 3.3 70B) + Gemini 1.5 Flash (fallback)
