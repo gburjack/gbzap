@@ -46,12 +46,14 @@ function ApiKeyField({ label, name, value, placeholder, link, linkLabel, onChang
 }
 
 function WhatsAppPanel() {
-  const [status,  setStatus]  = useState(null)
+  const [status,  setStatus]  = useState({ configured: true, connected: false })
   const [qrcode,  setQrcode]  = useState(null)
   const [loading, setLoading] = useState(false)
 
   const loadStatus = () => {
-    whatsappApi.status().then(r => setStatus(r.data)).catch(console.error)
+    whatsappApi.status()
+      .then(r => setStatus(r.data))
+      .catch(() => setStatus({ configured: true, connected: false }))
   }
 
   useEffect(() => { loadStatus() }, [])
@@ -70,7 +72,7 @@ function WhatsAppPanel() {
   const handleDisconnect = async () => {
     if (!confirm('Desconectar o WhatsApp? O histórico será preservado.')) return
     await whatsappApi.disconnect()
-    setStatus(null)
+    setStatus({ configured: true, connected: false })
     setQrcode(null)
   }
 
@@ -79,7 +81,6 @@ function WhatsAppPanel() {
       title="WhatsApp"
       description="Conecte seu número via Evolution API"
     >
-      {/* Status */}
       <div className="flex items-center gap-3">
         {status?.connected ? (
           <div className="flex items-center gap-2 px-3 py-2 bg-brand-500/10 border border-brand-500/20 rounded-lg">
@@ -89,9 +90,7 @@ function WhatsAppPanel() {
         ) : (
           <div className="flex items-center gap-2 px-3 py-2 bg-white/[0.04] border border-white/[0.08] rounded-lg">
             <WifiOff size={13} className="text-gray-500" />
-            <span className="text-sm text-gray-500">
-              {status?.configured === false ? 'Configure a Evolution API primeiro' : 'Desconectado'}
-            </span>
+            <span className="text-sm text-gray-500">Desconectado</span>
           </div>
         )}
         <button onClick={loadStatus} className="text-gray-500 hover:text-gray-300 p-1">
@@ -99,7 +98,6 @@ function WhatsAppPanel() {
         </button>
       </div>
 
-      {/* QR Code */}
       {qrcode && !status?.connected && (
         <div className="bg-white rounded-xl p-4 w-fit mx-auto">
           <img
@@ -113,7 +111,7 @@ function WhatsAppPanel() {
 
       <div className="flex gap-2">
         {!status?.connected ? (
-          <button onClick={handleConnect} disabled={loading || status?.configured === false}
+          <button onClick={handleConnect} disabled={loading}
             className="btn-primary flex items-center gap-2">
             {loading ? <Loader2 size={13} className="animate-spin" /> : <Wifi size={13} />}
             {qrcode ? 'Gerar novo QR' : 'Conectar WhatsApp'}
@@ -125,12 +123,6 @@ function WhatsAppPanel() {
           </button>
         )}
       </div>
-
-      {status?.configured === false && (
-        <p className="text-xs text-amber-400">
-          ⚠️ Configure a URL e chave da Evolution API abaixo antes de conectar.
-        </p>
-      )}
     </Section>
   )
 }
@@ -177,10 +169,8 @@ export default function IntegrationsPage() {
         <p className="text-sm text-gray-500">Configure suas chaves de API e conexões</p>
       </div>
 
-      {/* WhatsApp */}
       <WhatsAppPanel />
 
-      {/* Chaves de API */}
       <Section title="Chaves de API" description="Suas chaves são criptografadas e armazenadas com segurança">
 
         <div className="text-xs font-medium text-gray-500 uppercase tracking-wider">IA — Texto</div>
