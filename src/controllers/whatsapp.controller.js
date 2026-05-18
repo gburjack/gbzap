@@ -52,50 +52,65 @@ export async function connectInstance(req, res) {
     const name = instanceName(client.id);
     const webhookUrl = `${process.env.BACKEND_URL}/webhook/evolution/${client.id}`;
 
-    // Tenta criar a instância
-    try {
-      await fetch(`${client.evolution_api_url}/instance/create`, {
-        method: 'POST',
-        headers: { apikey: client.evolution_api_key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          instanceName: name,
-          integration: 'WHATSAPP-BAILEYS',
-          qrcode: true,
-          webhook: {
-            url: webhookUrl,
-            byEvents: true,
-            base64: true,
-            events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'],
-          },
-          groupsIgnore: true,
-          rejectCall: true,
-          alwaysOnline: true,
-          readMessages: true,
-        }),
-      });
-    } catch (_) {}
+    // Cria a instância no formato da v1.8.2
+    const createRes = await fetch(`${client.evolution_api_url}/instance/create`, {
+      method: 'POST',
+      headers: {
+        apikey: client.evolution_api_key,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        instanceName: name,
+        token: '',
+        qrcode: true,
+        webhook: webhookUrl,
+        webhook_by_events: true,
+        webhook_base64: true,
+        events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'],
+        reject_call: true,
+        groups_ignore: true,
+        always_online: true,
+        read_messages: true,
+      }),
+    });
 
-    // Busca o QR Code — tenta até 3 vezes
-    for (let i = 0; i < 3; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      
+    const createData = await createRes.json();
+    logger.info(`Create instance response: ${JSON.stringify(createData)}`);
+
+    // v1.8.2 já retorna o QR Code na criação
+    const qrcodeFromCreate =
+      createData?.qrcode?.base64 ||
+      createData?.hash?.qrcode ||
+      createData?.base64;
+
+    if (qrcodeFromCreate) {
+      return res.json({ message: 'Escaneie o QR Code', qrcode: qrcodeFromCreate, webhookUrl });
+    }
+
+    // Se não veio na criação, busca separadamente
+    for (let i = 0; i < 5; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+
       const qrRes = await fetch(
         `${client.evolution_api_url}/instance/connect/${name}`,
         { headers: { apikey: client.evolution_api_key } }
       );
       const qrData = await qrRes.json();
-
       logger.info(`QR attempt ${i + 1}: ${JSON.stringify(qrData)}`);
 
-      // Evolution v2 retorna code ou base64
-      const qrcode = qrData?.code || qrData?.base64 || qrData?.qrcode?.base64;
+      const qrcode =
+        qrData?.base64 ||
+        qrData?.qrcode?.base64 ||
+        qrData?.code;
 
       if (qrcode) {
         return res.json({ message: 'Escaneie o QR Code', qrcode, webhookUrl });
       }
     }
 
-    return res.status(500).json({ error: 'QR Code não disponível. Tente novamente em alguns segundos.' });
+    return res.status(500).json({
+      error: 'QR Code não disponível. Tente novamente em alguns segundos.',
+    });
   } catch (err) {
     logger.error('Erro ao conectar instância:', err.message);
     return res.status(500).json({ error: err.message });
