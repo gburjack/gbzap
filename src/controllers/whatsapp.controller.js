@@ -1,41 +1,38 @@
 // src/controllers/whatsapp.controller.js
-// Endpoints do painel para gerenciar a instância WhatsApp do cliente:
-// - Criar/reconectar instância
-// - Ver QR Code
-// - Verificar status de conexão
-// - Trocar número
-
 import { supabase } from '../config/database.js';
-import {
-  createInstance,
-  getQrCode,
-  getInstanceStatus,
-  deleteInstance,
-} from '../services/whatsapp/evolution.service.js';
 import { logger } from '../utils/logger.js';
+import fetch from 'node-fetch';
+
+function instanceName(clientId) {
+  return `gbzap_${clientId.replace(/-/g, '').substring(0, 16)}`;
+}
 
 // GET /api/whatsapp/status
 export async function getStatus(req, res) {
   try {
-    const client = req.client;
+    const { data: client } = await supabase
+      .from('clients')
+      .select('evolution_api_url, evolution_api_key')
+      .eq('id', req.client.id)
+      .single();
 
-    if (!client.evolution_api_url || !client.evolution_api_key) {
-      return res.json({
-        configured: false,
-        message: 'Evolution API não configurada. Adicione a URL e chave em Configurações > Integrações.',
-      });
+    if (!client?.evolution_api_url || !client?.evolution_api_key) {
+      return res.json({ configured: false, connected: false });
     }
 
-    const status = await getInstanceStatus({
-      evolutionUrl: client.evolution_api_url,
-      evolutionKey: client.evolution_api_key,
-      clientId:     client.id,
+    const name = instanceName(req.client.id);
+    const r = await fetch(
+      `${client.evolution_api_url}/instance/connectionState/${name}`,
+      { headers: { apikey: client.evolution_api_key } }
+    );
+    const data = await r.json();
+    return res.json({
+      configured: true,
+      connected: data?.instance?.state === 'open',
+      state: data?.instance?.state || 'unknown',
     });
-
-    return res.json({ configured: true, ...status });
   } catch (err) {
-    logger.error('Erro ao verificar status WhatsApp:', err.message);
-    return res.status(500).json({ error: 'Erro ao verificar status' });
+    return res.json({ configured: true, connected: false, state: 'error' });
   }
 }
 
@@ -48,47 +45,64 @@ export async function connectInstance(req, res) {
       .eq('id', req.client.id)
       .single();
 
-    if (!client.evolution_api_url || !client.evolution_api_key) {
-      return res.status(400).json({ error: 'Configure a Evolution API primeiro em Configurações' });
+    if (!client?.evolution_api_url || !client?.evolution_api_key) {
+      return res.status(400).json({ error: 'Configure a Evolution API primeiro' });
     }
 
+    const name = instanceName(client.id);
     const webhookUrl = `${process.env.BACKEND_URL}/webhook/evolution/${client.id}`;
 
-    // Tenta criar a instância (se já existir, Evolution retorna erro que ignoramos)
+    // Tenta criar a instância
     try {
-      await createInstance({
-        evolutionUrl: client.evolution_api_url,
-        evolutionKey: client.evolution_api_key,
-        clientId:     client.id,
-        webhookUrl,
+      await fetch(`${client.evolution_api_url}/instance/create`, {
+        method: 'POST',
+        headers: { apikey: client.evolution_api_key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instanceName: name,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+          webhook: {
+            url: webhookUrl,
+            byEvents: true,
+            base64: true,
+            events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'],
+          },
+          groupsIgnore: true,
+          rejectCall: true,
+          alwaysOnline: true,
+          readMessages: true,
+        }),
       });
-    } catch (err) {
-      // Se já existir, só busca o QR code
-      if (!err.message?.includes('already exists') && !err.message?.includes('já existe')) {
-        throw err;
+    } catch (_) {}
+
+    // Busca o QR Code — tenta até 3 vezes
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      
+      const qrRes = await fetch(
+        `${client.evolution_api_url}/instance/connect/${name}`,
+        { headers: { apikey: client.evolution_api_key } }
+      );
+      const qrData = await qrRes.json();
+
+      logger.info(`QR attempt ${i + 1}: ${JSON.stringify(qrData)}`);
+
+      // Evolution v2 retorna code ou base64
+      const qrcode = qrData?.code || qrData?.base64 || qrData?.qrcode?.base64;
+
+      if (qrcode) {
+        return res.json({ message: 'Escaneie o QR Code', qrcode, webhookUrl });
       }
     }
 
-    // Busca QR Code
-    const { qrcode } = await getQrCode({
-      evolutionUrl: client.evolution_api_url,
-      evolutionKey: client.evolution_api_key,
-      clientId:     client.id,
-    });
-
-    return res.json({
-      message: 'Escaneie o QR Code com o WhatsApp',
-      qrcode,
-      webhookUrl,
-    });
+    return res.status(500).json({ error: 'QR Code não disponível. Tente novamente em alguns segundos.' });
   } catch (err) {
     logger.error('Erro ao conectar instância:', err.message);
-    return res.status(500).json({ error: `Erro ao conectar: ${err.message}` });
+    return res.status(500).json({ error: err.message });
   }
 }
 
 // POST /api/whatsapp/disconnect
-// Deleta a instância atual mas preserva o histórico no banco
 export async function disconnectInstance(req, res) {
   try {
     const { data: client } = await supabase
@@ -97,15 +111,14 @@ export async function disconnectInstance(req, res) {
       .eq('id', req.client.id)
       .single();
 
-    await deleteInstance({
-      evolutionUrl: client.evolution_api_url,
-      evolutionKey: client.evolution_api_key,
-      clientId:     client.id,
+    const name = instanceName(client.id);
+    await fetch(`${client.evolution_api_url}/instance/delete/${name}`, {
+      method: 'DELETE',
+      headers: { apikey: client.evolution_api_key },
     });
 
-    return res.json({ message: 'Instância desconectada. Histórico de conversas preservado.' });
+    return res.json({ message: 'Desconectado. Histórico preservado.' });
   } catch (err) {
-    logger.error('Erro ao desconectar instância:', err.message);
     return res.status(500).json({ error: 'Erro ao desconectar' });
   }
 }
