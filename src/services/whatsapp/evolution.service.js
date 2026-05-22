@@ -1,7 +1,4 @@
 // src/services/whatsapp/evolution.service.js
-// Interface completa com a Evolution API
-// Gerencia instâncias por cliente, envio de mensagens e aquecimento de número
-
 import fetch from 'node-fetch';
 import { logger } from '../../utils/logger.js';
 import { supabase } from '../../config/database.js';
@@ -16,30 +13,19 @@ function evolutionHeaders(apiKey) {
 }
 
 function instanceName(clientId) {
-  // Nome da instância Evolution único por cliente
   return `gbzap_${clientId.replace(/-/g, '').substring(0, 16)}`;
 }
 
-// ─── ENVIO DE MENSAGENS ────────────────────────────────────────────────────────
+// ─── ENVIO DE MENSAGENS ───────────────────────────────────────────────────────
 
-/**
- * Envia uma mensagem de texto para um número no WhatsApp.
- *
- * @param {object} params
- * @param {string} params.evolutionUrl  - URL da Evolution API do cliente
- * @param {string} params.evolutionKey  - Chave da Evolution API do cliente
- * @param {string} params.clientId      - UUID do cliente (para nomear a instância)
- * @param {string} params.phone         - Número no formato '5511999999999'
- * @param {string} params.text          - Texto a enviar
- * @param {string} [params.quotedId]    - ID da mensagem a responder (opcional)
- */
 export async function sendTextMessage({ evolutionUrl, evolutionKey, clientId, phone, text, quotedId }) {
   const name = instanceName(clientId);
   const url  = `${evolutionUrl}/message/sendText/${name}`;
 
+  // Evolution API v1.8.2 exige o campo "textMessage" com "text" dentro
   const body = {
     number: phone,
-    text,
+    textMessage: { text },
     ...(quotedId && { quoted: { key: { id: quotedId } } }),
   };
 
@@ -59,15 +45,11 @@ export async function sendTextMessage({ evolutionUrl, evolutionKey, clientId, ph
     logger.info(`Mensagem enviada → ${phone} (${text.substring(0, 40)}...)`);
     return { success: true, messageId: data.key?.id };
   } catch (err) {
-    logger.error(`Falha ao enviar mensagem para ${phone}:`, err.message);
+    logger.error(`Falha ao enviar mensagem para ${phone}: ${err.message}`);
     throw err;
   }
 }
 
-/**
- * Simula digitação antes de enviar uma mensagem.
- * Torna a conversa mais natural.
- */
 export async function sendTyping({ evolutionUrl, evolutionKey, clientId, phone, durationMs = 2000 }) {
   const name = instanceName(clientId);
 
@@ -81,23 +63,14 @@ export async function sendTyping({ evolutionUrl, evolutionKey, clientId, phone, 
       }),
     });
   } catch (err) {
-    // Não é crítico — continua sem o typing indicator
     logger.warn('Falha ao enviar typing indicator:', err.message);
   }
 }
 
-/**
- * Envia mensagem com delay natural baseado no tamanho do texto.
- * Combina: pausa → typing indicator → envio
- */
 export async function sendMessageWithDelay({ evolutionUrl, evolutionKey, clientId, phone, text }) {
-  // Calcula delay proporcional ao tamanho (simula digitação humana)
-  // Mínimo: 1s | Máximo: 4s | ~50ms por caractere
   const typingMs = Math.min(4000, Math.max(1000, text.length * 50));
 
   await sendTyping({ evolutionUrl, evolutionKey, clientId, phone, durationMs: typingMs });
-
-  // Aguarda o tempo de "digitação"
   await new Promise(r => setTimeout(r, typingMs + 300));
 
   return sendTextMessage({ evolutionUrl, evolutionKey, clientId, phone, text });
@@ -105,10 +78,6 @@ export async function sendMessageWithDelay({ evolutionUrl, evolutionKey, clientI
 
 // ─── GERENCIAMENTO DE INSTÂNCIA ───────────────────────────────────────────────
 
-/**
- * Cria uma nova instância na Evolution API para um cliente.
- * Chamado quando o cliente configura seu número pela primeira vez.
- */
 export async function createInstance({ evolutionUrl, evolutionKey, clientId, webhookUrl }) {
   const name = instanceName(clientId);
 
@@ -117,21 +86,16 @@ export async function createInstance({ evolutionUrl, evolutionKey, clientId, web
     integration: 'WHATSAPP-BAILEYS',
     webhook: {
       url: webhookUrl,
-      byEvents: true,
-      base64: true,   // Evolution envia mídias em base64 (evita URLs expiradas)
-      events: [
-        'MESSAGES_UPSERT',   // nova mensagem recebida
-        'MESSAGES_UPDATE',   // status de entrega atualizado
-        'CONNECTION_UPDATE',  // status da conexão
-        'QRCODE_UPDATED',     // novo QR code gerado
-      ],
+      byEvents: false,
+      base64: false,
+      events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
     },
     qrcode: true,
-    rejectCall: true,         // rejeita chamadas automáticas
+    rejectCall: true,
     msgCall: 'Não realizamos atendimento por chamada. Por favor, envie uma mensagem!',
-    groupsIgnore: true,       // ignora mensagens de grupos
+    groupsIgnore: true,
     alwaysOnline: true,
-    readMessages: true,       // marca mensagens como lidas automaticamente
+    readMessages: true,
     readStatus: false,
   };
 
@@ -151,9 +115,6 @@ export async function createInstance({ evolutionUrl, evolutionKey, clientId, web
   return data;
 }
 
-/**
- * Busca o QR Code atual de uma instância (para escanear no WhatsApp).
- */
 export async function getQrCode({ evolutionUrl, evolutionKey, clientId }) {
   const name = instanceName(clientId);
 
@@ -166,14 +127,11 @@ export async function getQrCode({ evolutionUrl, evolutionKey, clientId }) {
   if (!res.ok) throw new Error(`Falha ao buscar QR: ${JSON.stringify(data)}`);
 
   return {
-    qrcode: data.code,      // string base64 ou string para exibir como QR
-    pairingCode: data.code, // código de pareamento alternativo
+    qrcode: data.code,
+    pairingCode: data.code,
   };
 }
 
-/**
- * Verifica o status de conexão de uma instância.
- */
 export async function getInstanceStatus({ evolutionUrl, evolutionKey, clientId }) {
   const name = instanceName(clientId);
 
@@ -191,10 +149,6 @@ export async function getInstanceStatus({ evolutionUrl, evolutionKey, clientId }
   }
 }
 
-/**
- * Deleta uma instância (usado ao trocar de número).
- * O histórico de conversas é preservado no banco de dados.
- */
 export async function deleteInstance({ evolutionUrl, evolutionKey, clientId }) {
   const name = instanceName(clientId);
 
@@ -214,21 +168,12 @@ export async function deleteInstance({ evolutionUrl, evolutionKey, clientId }) {
 
 // ─── AQUECIMENTO DE NÚMERO ────────────────────────────────────────────────────
 
-/**
- * Verifica se o cliente pode enviar mais mensagens hoje baseado no aquecimento.
- * Retorna true se pode enviar, false se atingiu o limite do dia.
- *
- * Plano de aquecimento progressivo:
- * Dia 1: 20 msgs | Dia 2: 40 | Dia 3: 60 | Dia 4: 80 | Dia 5: 100
- * Dia 6: 150 | Dia 7: 200 | Dia 8+: sem limite
- */
 export async function checkWarmupLimit(client) {
   if (!client.warmup_enabled) return { canSend: true };
 
   const WARMUP_SCHEDULE = [20, 40, 60, 80, 100, 150, 200];
   const warmupDay = client.warmup_day || 0;
 
-  // Aquecimento completo após 7 dias
   if (warmupDay >= WARMUP_SCHEDULE.length) {
     return { canSend: true, warmupComplete: true };
   }
@@ -236,7 +181,6 @@ export async function checkWarmupLimit(client) {
   const dailyLimit = WARMUP_SCHEDULE[warmupDay];
   const maxMsgs    = client.warmup_max_msgs || dailyLimit;
 
-  // Conta mensagens enviadas hoje
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -251,20 +195,12 @@ export async function checkWarmupLimit(client) {
 
   if (sentToday >= maxMsgs) {
     logger.warn(`Cliente ${client.id} atingiu limite de aquecimento: ${sentToday}/${maxMsgs}`);
-    return {
-      canSend:    false,
-      sentToday,
-      dailyLimit: maxMsgs,
-      warmupDay,
-    };
+    return { canSend: false, sentToday, dailyLimit: maxMsgs, warmupDay };
   }
 
   return { canSend: true, sentToday, dailyLimit: maxMsgs, warmupDay };
 }
 
-/**
- * Avança um dia no aquecimento (chamado pelo cron job diariamente).
- */
 export async function advanceWarmupDay(clientId) {
   const { data: client } = await supabase
     .from('clients')
