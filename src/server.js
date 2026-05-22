@@ -29,6 +29,10 @@ import { initCronJobs } from './queues/cron.js';
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// ─── Trust proxy (OBRIGATÓRIO no Railway) ───────────────────
+// Sem isso, o express-rate-limit rejeita headers X-Forwarded-For
+app.set('trust proxy', 1);
+
 // ─── Middlewares de segurança ────────────────────────────────
 app.use(helmet());
 
@@ -46,12 +50,15 @@ app.use(rateLimit({
   windowMs: 60 * 1000,
   max: 200,
   message: { error: 'Muitas requisições. Tente novamente em 1 minuto.' },
+  // Ignora erros de proxy — não quebra se header vier inesperado
+  validate: { xForwardedForHeader: false },
 }));
 
 // Rate limit específico para webhooks (mais permissivo — Evolution manda muita coisa)
 const webhookLimit = rateLimit({
   windowMs: 60 * 1000,
   max: 1000,
+  validate: { xForwardedForHeader: false },
 });
 
 // ─── Parse do body ───────────────────────────────────────────
